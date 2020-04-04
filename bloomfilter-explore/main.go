@@ -10,9 +10,9 @@ import (
 	"github.com/spaolacci/murmur3"
 )
 
-type IBloomFilter interface {
-	Add(item []byte)       // Adds the item into the Set
-	Test(item []byte) bool // Check if items is maybe in the Set
+type bloomFilterable interface {
+	Add([]byte)       // Adds the item into the Set
+	TestIsPresent([]byte) bool // Check if items is maybe in the Set
 }
 
 // BloomFilter probabilistic data structure definition

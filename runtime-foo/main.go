@@ -9,7 +9,7 @@ import (
 )
 
 func main() {
-	mem := make(map[int]string, 10240)
+	mem := make(map[int]string, 1024*1024)
 	t := time.NewTicker(time.Duration(5) * time.Second)
 	wg := sync.WaitGroup{}
 
@@ -32,14 +32,14 @@ func main() {
 	go func() {
 		defer wg.Done()
 		for {
+
+			runtime.LockOSThread()
 			runtime.GC()
+			runtime.UnlockOSThread()
 		}
 	}()
 
 	wg.Wait()
 
-	//
-	//runtime.LockOSThread()
-	//
-	//defer runtime.UnlockOSThread()
+
 }
