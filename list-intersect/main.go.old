@@ -1,0 +1,165 @@
+package main
+
+import (
+	"flag"
+	"fmt"
+	"log"
+	"math/rand"
+	"os"
+	"runtime/pprof"
+	"time"
+
+	mapset "github.com/deckarep/golang-set"
+)
+
+func memorySmartFriendlyIntersect(l1 []int, l2 []int) []int {
+	var f []int
+	var s map[int]interface{}
+	var l []int
+
+	// determine the shorter slice
+	if len(l1) < len(l2) {
+		s = make(map[int]interface{}, len(l1))
+		for _, e := range l1 {
+			s[e] = struct{}{}
+		}
+		l = l2
+	} else {
+		s = make(map[int]interface{}, len(l2))
+		for _, e := range l2 {
+			s[e] = struct{}{}
+		}
+		l = l1
+	}
+
+	for _, haystack := range l {
+		for needle := range s {
+			if needle == haystack {
+				f = append(f, needle)
+				break
+			}
+		}
+	}
+
+	return f
+}
+
+func smartIntersect(l1 []int, l2 []int) (f []int) {
+
+	var s map[int]interface{}
+	//var l []int
+
+	// determine the longer slice
+	if len(l1) > len(l2) {
+		s = make(map[int]interface{}, len(l1))
+		for _, e := range l1 {
+			if _, ok := s[e]; !ok {
+				s[e] = struct{}{}
+			}
+		}
+		for haystack := range s {
+			for _, needle := range l2 {
+				if needle == haystack {
+					f = append(f, needle)
+					break
+				}
+			}
+		}
+	} else {
+		s = make(map[int]interface{}, len(l2))
+		for _, e := range l2 {
+			if _, ok := s[e]; !ok {
+				s[e] = struct{}{}
+			}
+		}
+		for haystack := range s {
+			for _, needle := range l1 {
+				if (needle & haystack) == 1 {
+					f = append(f, needle)
+					break
+				}
+			}
+		}
+	}
+
+	return f
+}
+
+var cpuprofile = flag.String("cpuprofile", "", "write cpu profile to file")
+
+func main() {
+	flag.Parse()
+	if *cpuprofile != "" {
+		f, err := os.Create(*cpuprofile)
+		if err != nil {
+			log.Fatal(err)
+		}
+		pprof.StartCPUProfile(f)
+		defer pprof.StopCPUProfile()
+	}
+
+	rand.Seed(time.Now().UnixNano() + time.Now().UnixNano())
+	var r1 = rand.Intn(1000)
+	var r2 = rand.Intn(10_000_000)
+
+	//s1 := time.Now()
+	//memoryFriendlyIntersect(r1, r2)
+	//fmt.Printf("outer e=%v\n", time.Now().Sub(s1))
+
+	s1 := time.Now()
+	fastIntersect(r1, r2)
+	fmt.Printf("outer e=%v\n", time.Now().Sub(s1))
+
+	//s1 = time.Now()
+	//cpuSmartIntersect(r1, r2)
+	//fmt.Printf("outer e=%v\n", time.Now().Sub(s1))
+}
+
+//func cpuSmartIntersect(r1, r2 int) {
+//	var o1, o2 []int
+//	for i := 0; i <= r1; i++ {
+//		o1 = append(o1, i)
+//	}
+//	for z := r2; z > 0; z-- {
+//		o2 = append(o2, z)
+//	}
+//	s1 := time.Now()
+//	smartIntersect(o1, o2)
+//	fmt.Printf("\ncpuSmartIntersect()\n===========================\n")
+//	fmt.Printf("l=%v, e=%v\n", 1, time.Now().Sub(s1))
+//}
+//
+//func memoryFriendlyIntersect(r1, r2 int) {
+//	var o1, o2 []int
+//	for i := 0; i <= r1; i++ {
+//		o1 = append(o1, i)
+//	}
+//	for z := r2; z > 0; z-- {
+//		o2 = append(o2, z)
+//	}
+//	s1 := time.Now()
+//	l1 := memorySmartFriendlyIntersect(o1, o2)
+//	fmt.Printf("\nmemoryFriendlyIntersect()\n===========================\n")
+//	fmt.Printf("l=%v, e=%v\n", len(l1), time.Now().Sub(s1))
+//}
+
+func fastIntersect(r1, r2 int) {
+	o1 := mapset.NewSet()
+	o2 := mapset.NewSet()
+	s1 := time.Now()
+	for i := 0; i <= r1; i++ {
+		o1.Add(i)
+	}
+	for z := r2; z > 0; z-- {
+		o2.Add(z)
+	}
+	fmt.Printf("e1=%v\n", time.Now().Sub(s1))
+	_fastIntersect(o1, o2)
+}
+
+func _fastIntersect(o1, o2 mapset.Set) {
+	s1 := time.Now()
+	l1 := o1.Intersect(o2)
+	fmt.Printf("\nfastIntersect()\n===========================\n")
+	fmt.Printf("l=%v, e2=%v\n", l1.Cardinality(), time.Now().Sub(s1))
+}
