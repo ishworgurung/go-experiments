@@ -10,50 +10,36 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
-const (
-	internalLeaseTableSize = 1024
-)
-
-type dhcpV4Handler struct {
-	ip            net.IP         // Server IP to use
-	options       dhcp.Options   // Options to send to DHCP Clients
-	start         net.IP         // Start of IP range to distribute
-	leaseRange    int            // Number of IPs to distribute (starting from start)
-	leaseDuration time.Duration  // Lease period
-	leases        map[int]lease  // Map to keep track of leases
-	logger        zerolog.Logger // The logger
-}
-
 type lease struct {
 	nic    string    // Client's CHAddr
 	expiry time.Time // When the lease expires
 }
 
-// DHCPContext is the contract between this module and module's user
-type DHCPContext struct {
-	BindIP        net.IP
-	RouterIP      net.IP
-	DnsIP         net.IP
-	SubnetMask    net.IP
-	StartIP       net.IP
-	NumLeaseMax   int
-	LeaseDuration time.Duration
-	DomainName    string
+// dhcpCtx holds the internal DHCP context
+type dhcpCtx struct {
+	bindIP        net.IP
+	routerIP      net.IP
+	dnsIP         net.IP
+	subnetMask    net.IP
+	startIP       net.IP
+	numLeaseMax   int
+	leaseDuration time.Duration
+	domainName    string
 }
 
 // New creates a new DHCPv4 server object
-func New(dhcpIo *DHCPContext, zlogger zerolog.Logger) (*dhcpV4Handler, error) {
-	dhandler := &dhcpV4Handler{
-		ip:            []byte(dhcpIo.BindIP),
-		start:         dhcpIo.StartIP,
-		leaseDuration: dhcpIo.LeaseDuration,
-		leaseRange:    dhcpIo.NumLeaseMax,
+func newDHCPv4Handler(dhcpIo *dhcpCtx, zlogger zerolog.Logger) (*Handler, error) {
+	dhandler := &Handler{
+		ip:            []byte(dhcpIo.bindIP),
+		start:         dhcpIo.startIP,
+		leaseDuration: dhcpIo.leaseDuration,
+		leaseRange:    dhcpIo.numLeaseMax,
 		leases:        make(map[int]lease, internalLeaseTableSize),
 		options: dhcp.Options{
-			dhcp.OptionSubnetMask:       []byte(dhcpIo.SubnetMask),
-			dhcp.OptionRouter:           []byte(dhcpIo.RouterIP),
-			dhcp.OptionDomainNameServer: []byte(dhcpIo.DnsIP),
-			dhcp.OptionDomainName:       []byte(dhcpIo.DomainName),
+			dhcp.OptionSubnetMask:       []byte(dhcpIo.subnetMask),
+			dhcp.OptionRouter:           []byte(dhcpIo.routerIP),
+			dhcp.OptionDomainNameServer: []byte(dhcpIo.dnsIP),
+			dhcp.OptionDomainName:       []byte(dhcpIo.domainName),
 		},
 		logger: zlogger,
 	}
@@ -61,13 +47,13 @@ func New(dhcpIo *DHCPContext, zlogger zerolog.Logger) (*dhcpV4Handler, error) {
 }
 
 // Start starts serving DHCPv4 replies to DHCPv4 clients.
-func (h *dhcpV4Handler) Start(dh dhcp.Handler) error {
+func (h *Handler) Start() error {
 	h.logger.Info().Msgf("dhcpv4 server started listening on %s:67", h.ip)
-	return dhcp.ListenAndServe(dh)
+	return dhcp.ListenAndServe(h)
 }
 
 // ServeDHCP serves the response to DHCPv4 clients based on the type of request they ask.
-func (h *dhcpV4Handler) ServeDHCP(p dhcp.Packet, msgType dhcp.MessageType, options dhcp.Options) (d dhcp.Packet) {
+func (h *Handler) ServeDHCP(p dhcp.Packet, msgType dhcp.MessageType, options dhcp.Options) (d dhcp.Packet) {
 	reqIP := net.IP(options[dhcp.OptionRequestedIPAddress])
 	if reqIP == nil {
 		reqIP = net.IP(p.CIAddr())
@@ -125,7 +111,7 @@ func (h *dhcpV4Handler) ServeDHCP(p dhcp.Packet, msgType dhcp.MessageType, optio
 	return nil
 }
 
-func (h *dhcpV4Handler) freeLease() int {
+func (h *Handler) freeLease() int {
 	now := time.Now()
 	b := rand.Intn(h.leaseRange) // Try random first
 	for _, v := range [][]int{{b, h.leaseRange}, {0, b}} {

@@ -1,29 +1,14 @@
 package main
 
 import (
-	"errors"
-	"net"
 	"os"
 	"strconv"
-	"strings"
-	"time"
-	"unicode"
 
-	dhcpv4 "github.com/ishworgurung/opendhcpd/dhcp_handler"
-	"github.com/ishworgurung/opendhcpd/helper"
+	"github.com/ishworgurung/opendhcpd/dhcpv4"
 	"github.com/rs/zerolog"
 	"github.com/rs/zerolog/log"
 	"github.com/sevlyar/go-daemon"
 	"github.com/urfave/cli"
-)
-
-const (
-	errFailParseStartIP          = "failed to parse start IP address"
-	errFailParseDefaultGatewayIP = "failed to parse default gateway IP address"
-	errFailParseDNSIP            = "failed to parse DNS IP address"
-	errFailParseNetmaskIP        = "failed to parse netmask IP address"
-	errNegativeLeaseSec          = "lease duration must be > 0 seconds. ideally, keep it above 7200 seconds"
-	errInvalidDomainName         = "invalid domain name was provided. ideally, use non-unicode (for now) domain names"
 )
 
 func main() {
@@ -34,7 +19,7 @@ func main() {
 	app.Version = "0.2.0"
 	app.Name = "opendhcpd"
 	app.Usage = "no nonsense minimal DHCPv4 daemon"
-	cliFlag := []cli.Flag{
+	cliFlags := []cli.Flag{
 		cli.StringFlag{
 			Name:  "dhcp_start,s",
 			Usage: "dhcp start",
@@ -64,14 +49,15 @@ func main() {
 			Usage: "domain name",
 		},
 	}
+
 	app.Commands = []cli.Command{
 		{
 			Name:    "run-server",
 			Aliases: []string{"rs"},
 			Usage:   "run opendhcpd in foreground",
-			Flags:   cliFlag,
+			Flags:   cliFlags,
 			Action: func(c *cli.Context) error {
-				d, err := newDHCPV4(
+				d, err := dhcpv4.New(
 					c.String("dhcp_start"),
 					c.String("default_gw"),
 					c.String("subnet_mask"),
@@ -79,18 +65,12 @@ func main() {
 					c.Int("dhcp_range"),
 					c.Int("lease_duration_sec"),
 					c.String("domain_name"),
+					log.Logger,
 				)
-				if d == nil {
-					log.Fatal().Msg("failed to initialise dhcpv4 internal object. Did you pass all options?")
-				}
 				if err != nil {
 					log.Fatal().Msg(err.Error())
 				}
-				dh, err := dhcpv4.New(d, log.Logger)
-				if err != nil {
-					log.Fatal().Msgf("could not initialise DHCP handler %s", err)
-				}
-				log.Fatal().Msg(dh.Start(dh).Error())
+				log.Fatal().Msg(d.Start().Error())
 				return nil
 			},
 		},
@@ -98,7 +78,7 @@ func main() {
 			Name:    "background",
 			Aliases: []string{"bg"},
 			Usage:   "run opendhcpd in background",
-			Flags:   cliFlag,
+			Flags:   cliFlags,
 			Action: func(c *cli.Context) error {
 				s := c.String("dhcp_start")
 				g := c.String("default_gw")
@@ -139,55 +119,4 @@ func main() {
 	if err != nil {
 		log.Fatal().Msg(err.Error())
 	}
-}
-
-func newDHCPV4(start, router, netmask, dns string, max int, leaseSec int, domainName string) (*dhcpv4.DHCPContext, error) {
-	var l, si, r, sm, d net.IP
-	var err error
-
-	if l, err = helper.Localip(); err != nil {
-		log.Error().Msg(err.Error())
-		return nil, err
-	}
-	l = l.To4()
-
-	if si = net.ParseIP(start).To4(); si == nil {
-		log.Error().Msg(errFailParseStartIP)
-		return nil, errors.New(errFailParseStartIP)
-	}
-	if r = net.ParseIP(router).To4(); r == nil {
-		log.Error().Msg(errFailParseDefaultGatewayIP)
-		return nil, errors.New(errFailParseDefaultGatewayIP)
-	}
-	if d = net.ParseIP(dns).To4(); d == nil {
-		log.Error().Msg(errFailParseDNSIP)
-		return nil, errors.New(errFailParseDNSIP)
-	}
-	if sm = net.ParseIP(netmask).To4(); sm == nil {
-		log.Error().Msg(errFailParseNetmaskIP)
-		return nil, errors.New(errFailParseNetmaskIP)
-	}
-	if leaseSec <= 0 {
-		log.Error().Msg(errNegativeLeaseSec)
-		return nil, errors.New(errNegativeLeaseSec)
-	}
-	ld := time.Duration(leaseSec) * time.Second
-	ml := int(max)
-	dn := strings.TrimFunc(domainName, func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
-	})
-	if len(dn) == 0 {
-		log.Error().Msg(errInvalidDomainName)
-		return nil, errors.New(errInvalidDomainName)
-	}
-	return &dhcpv4.DHCPContext{
-		BindIP:        l,
-		RouterIP:      r,
-		DnsIP:         d,
-		SubnetMask:    sm,
-		StartIP:       si,
-		NumLeaseMax:   ml,
-		LeaseDuration: ld,
-		DomainName:    dn,
-	}, nil
 }
