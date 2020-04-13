@@ -201,7 +201,9 @@ func main() {
 
 	// add the capability to bind to low port
 	capNetBind := new(CapNetBindService)
-	capNetBind.AddCap()
+	if err := capNetBind.AddCap(); err != nil {
+		log.Fatal(err)
+	}
 	defer capNetBind.RemoveCap()
 
 	udpPacketConn, err := net.ListenUDP(udpServer.Net, udpAddr)
