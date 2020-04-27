@@ -20,9 +20,9 @@ import (
 	uuid "github.com/satori/go.uuid"
 )
 
-type pingHandler struct{}
+type healthCheck struct{}
 
-func (p pingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (p healthCheck) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 }
 
@@ -33,17 +33,22 @@ type Uploadable interface {
 }
 
 type fileUploadContext struct {
-	fn string       // file uploaded name
-	u  uuid.UUID    // file name: unique uuid v5
-	h  hash.Hash    // file unique hash
-	l  sync.RWMutex // file lock
+	fn                string        // file uploaded name
+	u                 uuid.UUID     // file name: unique uuid v5
+	h                 hash.Hash     // file unique hash
+	l                 sync.RWMutex  // file lock
+	t                 time.Duration // file's TTL
+	ttlCleanerContext               // file's ttl cleaner context
+}
+
+type ttlCleanerContext struct {
+	t time.Ticker
 }
 
 type fileUploader struct {
-	wg  sync.WaitGroup
-	ttl time.Duration
-	p   string
-	fileUploadContext
+	wg                sync.WaitGroup // locker
+	p                 string         // file storage path
+	fileUploadContext                // file's upload context
 }
 
 func (f *fileUploader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +101,7 @@ func (f *fileUploader) upload(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	uploadedFile, handler, err := r.FormFile("f")
+	uploadedFile, handler, err := r.FormFile("file")
 	if err != nil {
 		log.Println("error retrieving the File")
 		log.Println(err)
@@ -109,13 +114,22 @@ func (f *fileUploader) upload(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
+	uploadedFileTTL := r.Header.Get("ttl")
+	if len(uploadedFileTTL) == 0 {
+		f.t, err = time.ParseDuration(uploadedFileTTL)
+		if err != nil {
+			log.Printf("invalid duration: %s", err)
+			f.t = defaultFileTTL
+		}
+	}
+
 	if err = f.validateUploadedFile(handler.Filename, handler.Size); err != nil {
 		log.Println(err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
-	err, fileHash := f.contentAddressableHashFile(uploadedFile)
+	err, fileHash := f.hashFile(uploadedFile)
 	if err != nil {
 		log.Println(err)
 		w.WriteHeader(http.StatusBadRequest)
@@ -150,7 +164,7 @@ func (f *fileUploader) ensureDirWritable() error {
 	return nil
 }
 
-func (f *fileUploader) contentAddressableHashFile(uploadedFile multipart.File) (error, *string) {
+func (f *fileUploader) hashFile(uploadedFile multipart.File) (error, *string) {
 	var err error
 	if err := f.ensureDirWritable(); err != nil {
 		return err, nil
@@ -201,14 +215,18 @@ func newFileUploaderSvc() (*fileUploader, error) {
 		return nil, err
 	}
 	return &fileUploader{
-		wg:  sync.WaitGroup{},
-		ttl: defaultFileTTL,
-		p:   defaultStoragePath,
+		wg: sync.WaitGroup{},
+		p:  defaultStoragePath,
 		fileUploadContext: fileUploadContext{
-			l: sync.RWMutex{},
-			h: hh,
+			l:                 sync.RWMutex{},
+			h:                 hh,
+			ttlCleanerContext: ttlCleanerContext{},
 		},
 	}, nil
+}
+
+func newHealthCheckSvc() (*healthCheck, error) {
+	return &healthCheck{}, nil
 }
 
 func main() {
@@ -227,8 +245,12 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	healthCheckService, err := newHealthCheckSvc()
+	if err != nil {
+		log.Fatal(err)
+	}
 	mux := http.NewServeMux()
-	mux.Handle("/ping", pingHandler{})
+	mux.Handle("/ping", healthCheckService)
 	mux.Handle("/", fileUploaderService)
 
 	log.Println("listening on :8080")
