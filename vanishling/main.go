@@ -26,23 +26,49 @@ func (p healthCheck) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(200)
 }
 
-type Uploadable interface {
+type TTLable interface {
 	download(w http.ResponseWriter, r *http.Request)
 	upload(w http.ResponseWriter, r *http.Request)
 	delete(w http.ResponseWriter, r *http.Request)
 }
 
 type fileUploadContext struct {
-	fn                string        // file uploaded name
-	u                 uuid.UUID     // file name: unique uuid v5
-	h                 hash.Hash     // file unique hash
-	l                 sync.RWMutex  // file lock
-	t                 time.Duration // file's TTL
-	ttlCleanerContext               // file's ttl cleaner context
+	fn string       // file uploaded name
+	u  uuid.UUID    // file name: unique uuid v5
+	h  hash.Hash    // file unique hash
+	l  sync.RWMutex // file lock
+	// file's ttl cleaner context. one file has one cleaner
+	ttlCleanerContext
 }
 
 type ttlCleanerContext struct {
-	t time.Ticker
+	tm   *time.Timer        // ttl timer
+	fn   func(string) error // func to execute on the arg on timer expiration
+	file string             // file name
+	ttl  time.Duration      // the ttl of file for deletion
+}
+
+func newTTLCleanerService() ttlCleanerContext {
+	return ttlCleanerContext{
+		fn: func(f string) error {
+			p := filepath.Join(defaultStoragePath, f)
+			log.Printf("file: %s deleted due to ttl expiration \n", p)
+			if err := os.Remove(p); err != nil {
+				return err
+			}
+			return nil
+		},
+	}
+}
+
+func (e *ttlCleanerContext) run(f string) {
+	e.tm = time.NewTimer(e.ttl) // duration
+	for {
+		select {
+		case <-e.tm.C:
+			e.fn(f)
+		}
+	}
 }
 
 type fileUploader struct {
@@ -79,7 +105,7 @@ func (f *fileUploader) download(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	//FIXME: Path based attacks with the code below
+	//FIXME: Path based attacks is possible with the code below
 	p := filepath.Join(f.p, fileHash)
 	// seek to the start of the uploaded file
 	fileBytes, err := ioutil.ReadFile(p)
@@ -114,19 +140,27 @@ func (f *fileUploader) upload(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	uploadedFileTTL := r.Header.Get("ttl")
-	if len(uploadedFileTTL) == 0 {
-		f.t, err = time.ParseDuration(uploadedFileTTL)
-		if err != nil {
-			log.Printf("invalid duration: %s", err)
-			f.t = defaultFileTTL
-		}
-	}
-
-	if err = f.validateUploadedFile(handler.Filename, handler.Size); err != nil {
+	if err = f.setFileName(handler.Filename, handler.Size); err != nil {
 		log.Println(err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
+	}
+
+	uploadedFileTTL := r.Header.Get("x-ttl")
+	if len(uploadedFileTTL) != 0 {
+		f.ttl, err = time.ParseDuration(uploadedFileTTL)
+		if err != nil {
+			log.Printf("invalid duration: %s", err)
+			f.ttl = defaultFileTTL
+		}
+		log.Printf(
+			"setting duration of %s for file deletion (ttl) for file: %s",
+			f.ttl, f.fn)
+	} else {
+		log.Printf(
+			"setting default duration of %s for file deletion (ttl) for file: %s",
+			defaultFileTTL, f.fn)
+		f.ttl = defaultFileTTL
 	}
 
 	err, fileHash := f.hashFile(uploadedFile)
@@ -137,10 +171,12 @@ func (f *fileUploader) upload(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Add(defaultFileIdHeader, *fileHash)
 	w.WriteHeader(http.StatusOK)
+	// start ttl-based cleaner for the provided file
+	go f.run(*fileHash)
 }
 
-//FIXME: Path based attacks with the code below
-func (f *fileUploader) validateUploadedFile(fn string, fs int64) error {
+//FIXME: Path based attacks is possible with the code below
+func (f *fileUploader) setFileName(fn string, fs int64) error {
 	if len(fn) == 0 {
 		return errors.New("invalid file name")
 	}
@@ -197,7 +233,7 @@ func (f *fileUploader) hashFile(uploadedFile multipart.File) (error, *string) {
 
 const (
 	defaultHHSeed        = 0xffffa210
-	defaultFileTTL       = time.Duration(time.Hour * time.Duration(1))
+	defaultFileTTL       = time.Duration(time.Second * 5)
 	defaultStoragePath   = "/tmp/ttlFileUploads"
 	defaultMaxUploadByte = 10 << 20
 	defaultFileIdHeader  = "X-fileid"
@@ -220,7 +256,7 @@ func newFileUploaderSvc() (*fileUploader, error) {
 		fileUploadContext: fileUploadContext{
 			l:                 sync.RWMutex{},
 			h:                 hh,
-			ttlCleanerContext: ttlCleanerContext{},
+			ttlCleanerContext: newTTLCleanerService(),
 		},
 	}, nil
 }
