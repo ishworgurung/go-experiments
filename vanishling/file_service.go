@@ -91,13 +91,18 @@ func (f *fileUploader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (f *fileUploader) delete(w http.ResponseWriter, r *http.Request) {
 	// for audit purpose
 	f.remoteAddr = r.Header.Get("X-Real-IP")
-
+	if len(f.remoteAddr) == 0 {
+		f.remoteAddr = r.RemoteAddr
+	}
 }
 
 func (f *fileUploader) download(w http.ResponseWriter, r *http.Request) {
 	defer f.wg.Done()
 	// for audit purpose
 	f.remoteAddr = r.Header.Get("X-Real-IP")
+	if len(f.remoteAddr) == 0 {
+		f.remoteAddr = r.RemoteAddr
+	}
 
 	fileHash := r.Header.Get(defaultFileIdHeader)
 	if len(fileHash) == 0 {
@@ -131,6 +136,9 @@ func (f *fileUploader) upload(w http.ResponseWriter, r *http.Request) {
 
 	// for audit purpose
 	f.remoteAddr = r.Header.Get("X-Real-IP")
+	if len(f.remoteAddr) == 0 {
+		f.remoteAddr = r.RemoteAddr
+	}
 
 	if err := r.ParseMultipartForm(defaultMaxUploadByte); err != nil {
 		log.Println(f.remoteAddr + ":" + err.Error())
