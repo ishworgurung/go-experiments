@@ -33,10 +33,11 @@ type fileUploader struct {
 }
 
 type fileUploadContext struct {
-	fn string       // file uploaded name
-	u  uuid.UUID    // file name: unique uuid v5
-	h  hash.Hash    // file unique hash
-	l  sync.RWMutex // file lock
+	remoteAddr string       // file uploader IP address
+	fn         string       // file uploaded name
+	u          uuid.UUID    // file name: unique uuid v5
+	h          hash.Hash    // file unique hash
+	l          sync.RWMutex // file lock
 	// file's ttl cleaner context. one file has one cleaner
 	ttlCleanerContext internals.TTLDeleteContext
 	// file's ttl cleaner context. one file has one cleaner
@@ -88,64 +89,79 @@ func (f *fileUploader) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (f *fileUploader) delete(w http.ResponseWriter, r *http.Request) {
+	// for audit purpose
+	f.remoteAddr = r.Header.Get("X-Real-IP")
 
 }
 
 func (f *fileUploader) download(w http.ResponseWriter, r *http.Request) {
 	defer f.wg.Done()
+	// for audit purpose
+	f.remoteAddr = r.Header.Get("X-Real-IP")
+
 	fileHash := r.Header.Get(defaultFileIdHeader)
 	if len(fileHash) == 0 {
-		log.Printf("error retrieving the file '%s'", fileHash)
+		log.Printf(f.remoteAddr+": error retrieving the file '%s'", fileHash)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	//FIXME: Path based attacks is possible with the code below
+	if strings.Contains(fileHash, "..") || strings.Contains(fileHash, "/") {
+		log.Printf(f.remoteAddr+": error retrieving the file '%s'", fileHash)
+		w.WriteHeader(http.StatusForbidden)
+		return
+	}
+
+	//FIXME: Check that path based attacks is not possible with the code below
 	p := filepath.Join(f.p, fileHash)
 	// seek to the start of the uploaded file
 	fileBytes, err := ioutil.ReadFile(p)
 	if err != nil {
-		log.Println(err)
+		log.Printf(f.remoteAddr+": error while reading the file: %s\n", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	fileContents := string(fileBytes)
+	log.Printf(f.remoteAddr + ": ok")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, fileContents)
+	w.Write(fileBytes)
 	return
 }
 
 func (f *fileUploader) upload(w http.ResponseWriter, r *http.Request) {
 	defer f.wg.Done()
+
+	// for audit purpose
+	f.remoteAddr = r.Header.Get("X-Real-IP")
+
 	if err := r.ParseMultipartForm(defaultMaxUploadByte); err != nil {
-		log.Println(err)
+		log.Println(f.remoteAddr + ":" + err.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	uploadedFile, handler, err := r.FormFile("file")
 	if err != nil {
-		log.Println("error retrieving the File")
-		log.Println(err)
+		log.Println(f.remoteAddr + ":" + "error retrieving the File: %s" + err.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	defer func() {
 		if err = uploadedFile.Close(); err != nil {
-			log.Println(err)
+			log.Println(f.remoteAddr + ":" + err.Error())
 		}
 	}()
 
 	if err = f.setFileName(handler.Filename, handler.Size); err != nil {
-		log.Println(err)
+		log.Println(f.remoteAddr + ":" + err.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	err, fileNameAsHashId := f.hashFile(uploadedFile)
 	if err != nil {
-		log.Println(err)
+		log.Println(f.remoteAddr + ":" + err.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
+	log.Println(f.remoteAddr + ": ok")
 	w.Header().Add(defaultFileIdHeader, *fileNameAsHashId)
 	w.WriteHeader(http.StatusOK)
 
@@ -153,38 +169,36 @@ func (f *fileUploader) upload(w http.ResponseWriter, r *http.Request) {
 	if len(uploadedFileTTL) != 0 {
 		f.ttlCleanerContext.Ttl, err = time.ParseDuration(uploadedFileTTL)
 		if err != nil {
-			log.Printf("invalid duration: %s", err)
+			log.Printf(f.remoteAddr+":"+"invalid duration: %s", err)
 			f.ttlCleanerContext.Ttl = defaultFileTTL
 		}
-		log.Printf(
-			"uploader: setting duration of %s for file deletion (ttl) for file: %s and hashed file id: %s",
+		log.Printf(f.remoteAddr+": uploader: setting duration of %s for file deletion (ttl) for file: '%s' and hashed file id: %s",
 			f.ttlCleanerContext.Ttl, f.fn, *fileNameAsHashId)
 	} else {
-		log.Printf(
-			"uploader: setting default duration of %s for file deletion (ttl) for file: %s and hashed file id: %s",
+		log.Printf(f.remoteAddr+":"+
+			"uploader: setting default duration of %s for file deletion (ttl) for file: '%s' and hashed file id: %s",
 			defaultFileTTL, f.fn, *fileNameAsHashId)
 		f.ttlCleanerContext.Ttl = defaultFileTTL
 	}
 
 	// set ttl for deletion in the log entry in case, service goes down.
-	if err := f.ttlCleanerContext.WriteWALEntry(f.ttlCleanerContext.Ttl, defaultStoragePath, *fileNameAsHashId); err != nil {
-		log.Printf("could not write WAL entry for file %s with TTL: %s : %s\n", *fileNameAsHashId, f.ttlCleanerContext.Ttl, err)
+	if err := f.ttlCleanerContext.WriteLogEntry(f.ttlCleanerContext.Ttl, defaultStoragePath, *fileNameAsHashId); err != nil {
+		log.Printf(f.remoteAddr+": could not write log entry for file '%s': %s\n", *fileNameAsHashId, err)
 	}
-
-	// start ttl-based cleaner for the provided file
-	//go f.ttlCleanerContext.SetTTLCleaner(f.lp, *fileNameAsHashId)
-
 }
 
-//FIXME: Path based attacks is possible with the code below
+//FIXME: Check that path based attacks is not possible with the code below
 func (f *fileUploader) setFileName(fn string, fs int64) error {
 	if len(fn) == 0 {
-		return errors.New("invalid file name")
+		return errors.New(f.remoteAddr + ": invalid file name")
+	}
+	if strings.Contains(fn, "..") || strings.Contains(fn, "/") {
+		return errors.New(f.remoteAddr + ": invalid file name")
+	}
+	if fs == 0 {
+		return errors.New(f.remoteAddr + ": zero byte file uploaded")
 	}
 	f.fileUploadContext.fn = fn
-	if fs == 0 {
-		return errors.New("zero byte file uploaded")
-	}
 	return nil
 }
 
@@ -201,6 +215,7 @@ func (f *fileUploader) ensureDirWritable() error {
 	return nil
 }
 
+// Hash the file and use it as a file name.
 func (f *fileUploader) hashFile(uploadedFile multipart.File) (error, *string) {
 	var err error
 	if err := f.ensureDirWritable(); err != nil {
@@ -208,7 +223,7 @@ func (f *fileUploader) hashFile(uploadedFile multipart.File) (error, *string) {
 	}
 	f.l.Lock()
 	defer f.l.Unlock()
-	f.h.Write([]byte(time.Now().String()))
+	f.h.Write([]byte(time.Now().String())) // mixer
 	_, err = io.Copy(f.h, uploadedFile)
 	if err != nil {
 		return err, nil

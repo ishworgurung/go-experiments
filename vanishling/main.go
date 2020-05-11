@@ -17,8 +17,8 @@ type Vanishable interface {
 // FIXME: This should ideally come from config file
 const (
 	defaultHHSeed        = 0xffffa210 // FIXME
-	defaultFileTTL       = time.Duration(time.Second * 5)
-	defaultMaxUploadByte = 10 << 20
+	defaultFileTTL       = time.Duration(time.Minute * 5)
+	defaultMaxUploadByte = 1024 * 15
 	defaultFileIdHeader  = "x-file-id"
 	defaultStoragePath   = "/tmp/vanishling/uploads"
 	defaultLogPath       = "/tmp/vanishling/log"
