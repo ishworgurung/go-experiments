@@ -1,4 +1,4 @@
-package internals
+package main
 
 import (
 	"errors"
@@ -10,14 +10,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-)
-
-// FIXME: This should ideally come from config file
-const (
-	defaultStoragePath        = "/tmp/vanishling/uploads"
-	defaultLogPath            = "/tmp/vanishling/log"
-	defaultLogCleanerInterval = time.Second * 60
-	defaultLogFile            = "entries.log"
 )
 
 type TTLDeleteContext struct {

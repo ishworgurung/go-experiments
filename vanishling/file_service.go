@@ -16,8 +16,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/ishworgurung/vanishling/internals"
-
 	uuid "github.com/satori/go.uuid"
 
 	"github.com/minio/highwayhash"
@@ -39,9 +37,9 @@ type fileUploadContext struct {
 	h          hash.Hash    // file unique hash
 	l          sync.RWMutex // file lock
 	// file's ttl cleaner context. one file has one cleaner
-	ttlCleanerContext internals.TTLDeleteContext
+	ttlCleanerContext TTLDeleteContext
 	// file's ttl cleaner context. one file has one cleaner
-	logTtlCleanerContext *internals.LogBasedTTLDeleteContext
+	logTtlCleanerContext *LogBasedTTLDeleteContext
 }
 
 func newFileUploaderSvc() (*fileUploader, error) {
@@ -56,7 +54,7 @@ func newFileUploaderSvc() (*fileUploader, error) {
 		return nil, err
 	}
 
-	logBasedTTLCleaner := internals.NewLogBasedTTLDeleterService()
+	logBasedTTLCleaner := NewLogBasedTTLDeleterService()
 	go logBasedTTLCleaner.StartLogCleanerTimerLoop(defaultLogPath) // read path
 
 	return &fileUploader{
@@ -66,7 +64,7 @@ func newFileUploaderSvc() (*fileUploader, error) {
 		fileUploadContext: fileUploadContext{
 			l:                    sync.RWMutex{},
 			h:                    hh,
-			ttlCleanerContext:    internals.NewTTLDeleterService(),
+			ttlCleanerContext:    NewTTLDeleterService(),
 			logTtlCleanerContext: logBasedTTLCleaner,
 		},
 	}, nil
@@ -173,7 +171,7 @@ func (f *fileUploader) upload(w http.ResponseWriter, r *http.Request) {
 	w.Header().Add(defaultFileIdHeader, *fileNameAsHashId)
 	w.WriteHeader(http.StatusOK)
 
-	uploadedFileTTL := r.Header.Get("x-ttl")
+	uploadedFileTTL := r.Header.Get(defaultTTLHeader)
 	if len(uploadedFileTTL) != 0 {
 		f.ttlCleanerContext.Ttl, err = time.ParseDuration(uploadedFileTTL)
 		if err != nil {

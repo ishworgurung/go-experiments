@@ -5,7 +5,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"time"
 )
 
 type Vanishable interface {
@@ -13,16 +12,6 @@ type Vanishable interface {
 	upload(w http.ResponseWriter, r *http.Request)
 	delete(w http.ResponseWriter, r *http.Request)
 }
-
-// FIXME: This should ideally come from config file
-const (
-	defaultHHSeed        = 0xffffa210 // FIXME
-	defaultFileTTL       = time.Duration(time.Minute * 5)
-	defaultMaxUploadByte = 1024 * 15
-	defaultFileIdHeader  = "x-file-id"
-	defaultStoragePath   = "/tmp/vanishling/uploads"
-	defaultLogPath       = "/tmp/vanishling/log"
-)
 
 func main() {
 
