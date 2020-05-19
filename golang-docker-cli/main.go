@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/client"
@@ -21,7 +22,7 @@ func main() {
 		panic(err)
 	}
 
-	//var dockerFile string
+	var dockerFile string
 	var dockerBaseImage string
 
 	// image search
@@ -54,6 +55,7 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
+
 	for _, ih := range imageHistory {
 		if len(ih.Tags) == 0 {
 			continue
@@ -62,8 +64,34 @@ func main() {
 		if ih.Tags[0] == foundImage {
 			continue
 		}
-
 		dockerBaseImage += fmt.Sprintf(" built from base image '%s'\n", ih.Tags[0])
+		dockerFile += fmt.Sprintf("FROM %s\n", ih.Tags[0])
+		break
 	}
-	fmt.Print(dockerBaseImage)
+
+	fmt.Println("------------------------------------------------------")
+	fmt.Println(dockerBaseImage)
+	fmt.Println("------------------------------------------------------")
+
+	var l []string
+	for i := len(imageHistory) - 1; i >= 0; i-- {
+		history := imageHistory[i]
+		cmd := strings.ReplaceAll(history.CreatedBy, "/bin/sh -c #(nop) ", "")
+		cmd = strings.ReplaceAll(cmd, "/bin/sh -c", "RUN /bin/sh -c")
+		cmd = strings.ReplaceAll(cmd, " CMD [\"/bin/sh\"]", "")
+		cmd = strings.ReplaceAll(cmd, " CMD [\"/bin/bash\"]", "")
+		cmd = strings.ReplaceAll(cmd, " ENV", "ENV")
+		l = append(l, cmd)
+	}
+
+	for _, e := range l {
+		if len(e) == 0 {
+			continue
+		}
+		dockerFile += fmt.Sprintf("%s\n", e)
+	}
+	fmt.Println("------------------------------------------------------")
+	fmt.Println("Complete Dockerfile")
+	fmt.Println("------------------------------------------------------")
+	fmt.Printf("%s", dockerFile)
 }
