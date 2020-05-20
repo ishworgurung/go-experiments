@@ -33,10 +33,6 @@ func main() {
 		replacer = strings.NewReplacer(
 			"/bin/sh -c #(nop) ", "",
 			"/bin/sh -c", "RUN /bin/sh -c",
-			"CMD [\"/bin/sh\"]", "",
-			" CMD [\"/bin/bash\"]", "",
-			" CMD [\"/bin/ash\"]", "",
-			" CMD [\"/bin/tcsh\"]", "",
 			"&&", "\\\n    &&",
 		)
 	)
@@ -54,9 +50,9 @@ func main() {
 		log.Fatal().Err(err)
 	}
 
-	// image search
+	// List images - search the user provided image
 	originalImageName, originalImageID := func(imageName string) (string, string) {
-		// get image list
+		// Get image list
 		imageList, err := cli.ImageList(context.Background(), types.ImageListOptions{})
 		if err != nil {
 			log.Fatal().Err(err)
@@ -77,13 +73,12 @@ func main() {
 
 	if len(originalImageName) == 0 && len(originalImageID) == 0 {
 		log.Fatal().Msg("no such image found")
-	} else {
-		dockerBaseImage = fmt.Sprintf("I found the image '%s' with id '%s' ",
-			originalImageName, originalImageID)
 	}
 
-	// Dockerfile reconstruction
-	// get image history
+	dockerBaseImage = fmt.Sprintf("I found the image '%s' with id '%s' ",
+		originalImageName, originalImageID)
+
+	// Dockerfile reconstruction - get image history.
 	imageHistory, err := cli.ImageHistory(context.Background(), originalImageID)
 	if err != nil {
 		log.Fatal().Err(err)
@@ -110,6 +105,9 @@ func main() {
 	// traverse image history slice backwards
 	for i := len(imageHistory) - 1; i >= 0; i-- {
 		history := imageHistory[i].CreatedBy
+		if len(history) == 0 {
+			continue
+		}
 		steps := replacer.Replace(history)
 		for _, e := range reserved {
 			steps = strings.ReplaceAll(steps, " "+e, e)
