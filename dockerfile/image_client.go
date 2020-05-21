@@ -19,21 +19,40 @@ var (
 	errLocalImageNotFound = errors.New("tried listing the image name but could not find any image")
 )
 
-func newDockerImageClient(repo string) DockerImageClient {
+func newDockerImageClient(repo string, loglevel string) DockerImageClient {
+	l := strings.ToLower(loglevel)
+	var ll zerolog.Level
+	switch {
+	case l == "debug":
+		ll = zerolog.DebugLevel
+	case l == "warn":
+		ll = zerolog.WarnLevel
+	case l == "info":
+		ll = zerolog.InfoLevel
+	case l == "error":
+		ll = zerolog.ErrorLevel
+	case l == "fatal":
+		ll = zerolog.FatalLevel
+	default:
+		ll = zerolog.InfoLevel
+	}
+	zerolog.SetGlobalLevel(ll)
+
 	output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
 	zlog := zerolog.New(output).With().Timestamp().Logger()
 	cli, err := client.NewEnvClient()
 	if err != nil {
 		zlog.Fatal().Msg(err.Error())
 	}
-	return DockerImageClient{
+	dic := DockerImageClient{
 		zlog: zlog,
 		cli:  cli,
 		repo: repo + "/",
 	}
+	return dic
 }
 
-func (d *DockerImageClient) getImageIdByName(imageName string) (string, error) {
+func (d *DockerImageClient) getImageIdByName() (string, error) {
 	// TODO: a better way is to use a filter.
 	imageList, err := d.cli.ImageList(context.Background(), types.ImageListOptions{})
 	if err != nil {
@@ -41,7 +60,10 @@ func (d *DockerImageClient) getImageIdByName(imageName string) (string, error) {
 	}
 	for _, image := range imageList {
 		for _, i := range image.RepoTags {
-			if len(i) > 0 && i == imageName {
+			// e.g. `asia.gcr.io/google-containers/ubuntu-slim:0.14` vs. `ubuntu:focal`
+			// The first one is fully canonicalize whereas the second one is integrated
+			// with Docker to use `docker.io/library/ubuntu:focal` internally. We look for both matches.
+			if len(i) > 0 && (i == (d.repo+d.imageName) || (i == d.imageName)) {
 				// Found
 				return image.ID, nil
 			}

@@ -1,9 +1,10 @@
-FROM debian:buster as stage1
+FROM golang:latest as build
+WORKDIR /src
+COPY go.* /src/
+COPY *.go /src/
+RUN go build -v -ldflags='-w -s' -o /tmp/dockerfile
 
-RUN echo hello > /tmp/hello
-
-
-FROM alpine:latest as stage2
-COPY --from=stage1 /tmp/hello /hello
-RUN cat /hello
+FROM ubuntu:latest as run
+COPY --from=build /tmp/dockerfile /usr/local/bin/dockerfile
+ENTRYPOINT ["/usr/local/bin/dockerfile"]
 

@@ -24,4 +24,6 @@ type DockerImageClient struct {
 	imageId    string
 	repo       string
 	dockerfile string
+	//otherRepoSet bool
+	//done         bool
 }
