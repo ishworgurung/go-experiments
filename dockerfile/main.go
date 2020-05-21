@@ -2,117 +2,66 @@ package main
 
 // Generate Dockerfile from a Docker image
 import (
-	"context"
+	"flag"
 	"fmt"
-	"os"
-	"strings"
-	"time"
-
-	"github.com/docker/docker/api/types"
-	"github.com/docker/docker/client"
-	"github.com/rs/zerolog"
 )
 
 func main() {
+	imageIdOpt := flag.String("i", "", "-i [imageid|layerid]")
+	imageNameOpt := flag.String("n", "", "-n [foobar:latest|foobar:1.1.2]")
+	imageRepo := flag.String("r", "docker.io/library", "-r [0234551.dkr.ap-southeast-2.aws.com/foobar|docker.io/library]")
+	flag.Parse()
+
 	var (
-		curr, baseImage             string
-		dockerBaseImage, dockerFile string
-		// good enough..
-		reserved = []string{
-			"ENV",
-			"EXPOSE",
-			"ARG",
-			"LABEL",
-			"USER",
-			"EXPOSE",
-			"CMD",
-			"MAINTAINER",
-			"ENTRYPOINT",
-			"STOPSIGNAL",
-		}
-		replacer = strings.NewReplacer(
-			"/bin/sh -c #(nop) ", "",
-			"/bin/sh -c", "RUN /bin/sh -c",
-			"&&", "\\\n    &&",
-		)
+		err error
 	)
-
-	output := zerolog.ConsoleWriter{Out: os.Stdout, TimeFormat: time.RFC3339}
-	log := zerolog.New(output).With().Timestamp().Logger()
-
-	if len(os.Args) == 1 {
-		log.Fatal().Msg("need image tag name as the first arg")
-	}
-	imageName := os.Args[1]
-
-	cli, err := client.NewEnvClient()
-	if err != nil {
-		log.Fatal().Err(err)
+	// Either image id or image name tag must be provided.
+	// The Image repo is optional and defaults to `docker.io/library/`
+	if len(*imageNameOpt) == 0 && len(*imageIdOpt) == 0 {
+		println("either image name or image id should be provided")
+		flag.Usage()
 	}
 
-	// List images - search the user provided image
-	originalImageName, originalImageID := func(imageName string) (string, string) {
-		// Get image list
-		imageList, err := cli.ImageList(context.Background(), types.ImageListOptions{})
+	dir := newDockerImageClient(*imageRepo)
+	if len(*imageNameOpt) > 0 {
+		dir.imageName = *imageNameOpt
+		// Search the user provided image name to get the image id
+		dir.imageId, err = dir.getImageIdByName(*imageNameOpt)
 		if err != nil {
-			log.Fatal().Err(err)
+			dir.zlog.Warn().Msg(err.Error())
 		}
-		var (
-			iName, iID string
-		)
-		for _, image := range imageList {
-			for _, i := range image.RepoTags {
-				if len(i) > 0 && i == imageName {
-					iName = i
-					iID = image.ID
-				}
+		// Pull image from registry since it does not exist locally
+		if len(dir.imageId) == 0 {
+			dir.zlog.Warn().Msg("the image could not be found locally")
+			if err = dir.pullImage(); err != nil {
+				dir.zlog.Fatal().Msg(err.Error())
 			}
 		}
-		return iName, iID
-	}(imageName)
-
-	if len(originalImageName) == 0 && len(originalImageID) == 0 {
-		log.Fatal().Msg("no such image found")
-	}
-
-	dockerBaseImage = fmt.Sprintf("I found the image '%s' with id '%s' ",
-		originalImageName, originalImageID)
-
-	// Dockerfile reconstruction - get image history.
-	imageHistory, err := cli.ImageHistory(context.Background(), originalImageID)
-	if err != nil {
-		log.Fatal().Err(err)
-	}
-	for _, ih := range imageHistory {
-		if len(ih.Tags) == 0 {
-			continue
-		}
-		curr = ih.Tags[0]
-	}
-	if len(curr) == 0 {
-		log.Fatal().Msg("The base image could not be found!")
-	}
-
-	if curr == originalImageName {
-		baseImage = originalImageName
 	} else {
-		baseImage = curr
+		// Search the user provided image id to get the image name
+		// Image pull does not happen here
+		dir.imageName, err = dir.getBaseImageTagByImageId(*imageIdOpt)
+		if err != nil {
+			dir.zlog.Error().Msg(err.Error())
+		}
+		if len(dir.imageName) == 0 {
+			dir.zlog.Fatal().Msg("the image could not be found locally")
+		}
+		dir.imageId = *imageIdOpt
 	}
-	dockerBaseImage += fmt.Sprintf(" which was built from the base image '%s'", baseImage)
-	log.Info().Msg(dockerBaseImage)
 
-	dockerFile += fmt.Sprintf("FROM %s\n", baseImage)
-	// traverse image history slice backwards
-	for i := len(imageHistory) - 1; i >= 0; i-- {
-		history := imageHistory[i].CreatedBy
-		if len(history) == 0 {
-			continue
-		}
-		steps := replacer.Replace(history)
-		for _, e := range reserved {
-			steps = strings.ReplaceAll(steps, " "+e, e)
-		}
-		dockerFile += fmt.Sprintf("%s\n", steps)
+	dir.imageId, err = dir.getImageIdByName(dir.imageName)
+	if err != nil {
+		dir.zlog.Fatal().Msg(err.Error())
 	}
-	log.Info().Msgf("Complete Dockerfile with multi-stage build steps\n%s", dockerFile)
+	// Dockerfile reconstruction
+	bi, err := dir.getBaseImageTagByImageId(dir.imageId)
+	if err != nil {
+		dir.zlog.Fatal().Msg(err.Error())
+	}
+	dir.dockerfile, err = dir.dockerFile(bi)
+	if err != nil {
+		dir.zlog.Fatal().Msg(err.Error())
+	}
+	fmt.Printf("%s", dir.dockerfile)
 }
