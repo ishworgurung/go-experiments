@@ -1,41 +1,25 @@
 package main
 
 import (
+	"encoding/csv"
 	"fmt"
 	"log"
 	"os"
 
-	vault "github.com/hashicorp/vault/api"
+	v "vault-secrets/vault_client"
 )
 
-// Logical vault
-type VaultLogical struct {
-	path   string
-	Client *vault.Client
-	Config *vault.Config
+type keepassEntry struct {
+	group    string
+	title    string
+	username string
+	password string
+	url      string
+	notes    string
 }
 
-func (v *VaultLogical) readPath(key, path string) (interface{}, error) {
-	s, err := v.Client.Logical().Read(path)
-	if err != nil {
-		return nil, fmt.Errorf("err: %s", err)
-	}
-	secretVal := s.Data[key]
-	return secretVal, nil
-}
-
-func newVaultClient(vaultToken string) (*VaultLogical, error) {
-	vConfig := vault.DefaultConfig()
-	vClient, err := vault.NewClient(vConfig)
-	if err != nil {
-		return nil, fmt.Errorf("err: %s", err)
-	}
-	vClient.SetToken(vaultToken)
-	vl := &VaultLogical{
-		Client: vClient,
-		Config: vConfig,
-	}
-	return vl, nil
+type VaultEntries struct {
+	entry interface{}
 }
 
 func main() {
@@ -47,22 +31,62 @@ func main() {
 	if vaultAddr == "" {
 		log.Fatal("VAULT_ADDR env variable is empty")
 	}
-	vaultClient, err := newVaultClient(vaultToken)
+
+	c, err := v.NewClient(vaultToken)
 	if err != nil {
 		log.Fatalf("err: %s\n", err)
 	}
-	helloSecret, err := vaultClient.readPath("hello", "secret/foo")
+
+	// TODO: add support being piped to.
+	// gpg -d test-keepassdb.csv.gpg | go run main.go
+	r, err := os.Open("test-keepassdb.csv")
 	if err != nil {
-		log.Fatalf("err: %+s\n", err)
+		log.Fatalf("error: %s\n", err)
 	}
-	log.Printf("hello = %+v\n", helloSecret)
+	cr := csv.NewReader(r)
+	records, err := cr.ReadAll()
+	if err != nil {
+		log.Fatalf("error: %s\n", err)
+	}
 
-	// log.Println("writing to secret/foo hello=world")
-	// s := make(map[string]interface{})
-	// s["hello"] = 123
-	// secret, err = client.Logical().Write("secret/foo", s)
-	// if err != nil {
-	// 	log.Fatalf("err: %+v\n", err)
-	// }
+	var entries []keepassEntry
 
+	for _, e := range records {
+		entry := keepassEntry{
+			group:    e[0],
+			title:    e[1],
+			username: e[2],
+			password: e[3],
+			url:      e[4],
+			notes:    e[5],
+		}
+		entries = append(entries, entry)
+	}
+	d := VaultEntries{
+		entry: make(map[string]interface{}),
+	}
+	for i, e := range entries {
+		if i == 0 {
+			continue
+		}
+		secret, ok := d.entry.(map[string]interface{})
+		if !ok {
+			panic("d.entry is not a map")
+		}
+		//TODO: need to seal this secret in enclave?
+		//https://github.com/awnumar/memguard/issues/118
+		//https://github.com/genezhang/crypt
+		secret["Group"] = e.group
+		secret["Title"] = e.title
+		secret["Username"] = e.username
+		secret["Password"] = e.password
+		secret["URL"] = e.url
+		secret["Notes"] = e.notes
+		secretPath := fmt.Sprintf("cubbyhole/%s", e.title)
+		_, err := c.Client.Logical().Write(secretPath, secret)
+		if err != nil {
+			log.Fatalf("error while writing to secret path '%s' to Vault: %s\n", secretPath, err)
+		}
+		delete(secret, "Password")
+	}
 }
