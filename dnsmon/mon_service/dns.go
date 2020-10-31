@@ -223,7 +223,7 @@ func (q *Q) runDNSMonitoring(ctx context.Context, records []string, qry string) 
 					q.results <- res
 				}
 			}
-			q.lg.Info().Msgf("cache update finished..")
+			q.lg.Debug().Msgf("cache update finished..")
 		}
 	}
 }
