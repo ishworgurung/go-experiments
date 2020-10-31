@@ -42,8 +42,7 @@ func main() {
 
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
 	zerolog.SetGlobalLevel(loglevel(*ll))
-	lg := zerolog.New(os.Stdout)
-
+	lg := log.Output(zerolog.ConsoleWriter{Out: os.Stderr})
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 

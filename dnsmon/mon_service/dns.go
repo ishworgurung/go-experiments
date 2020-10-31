@@ -41,7 +41,7 @@ func New(lg zerolog.Logger, interval string) (*Q, error) {
 		results:  make(chan *DNSResult),
 		lg:       lg.With().Str("module", "mon_service").Timestamp().Logger(),
 		intv:     intv,
-		cacheTTL: 1 * time.Minute,
+		cacheTTL: 20 * time.Second,
 	}, nil
 }
 
@@ -131,7 +131,7 @@ func (q *Q) Start(ctx context.Context, rec []string, qryType string) error {
 			select {
 			case <-t.C:
 				q.mu.Lock()
-				q.lg.Info().Msg("flushing the cache..")
+				q.lg.Info().Msg("flushing entire cache..")
 				cache = make(map[string]*DNSResult)
 				q.mu.Unlock()
 			}
@@ -205,7 +205,6 @@ func (q *Q) processDNSRecordChange(ctx context.Context, d *DNSResult) {
 				d.question, d.qtype, d.answers)
 		}
 	}
-
 }
 
 // blocking
@@ -224,6 +223,7 @@ func (q *Q) runDNSMonitoring(ctx context.Context, records []string, qry string) 
 					q.results <- res
 				}
 			}
+			q.lg.Info().Msgf("cache update finished..")
 		}
 	}
 }
