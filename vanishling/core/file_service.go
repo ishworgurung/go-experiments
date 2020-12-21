@@ -1,13 +1,13 @@
-package main
+package core
 
 import (
+	"context"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"hash"
 	"io"
 	"io/ioutil"
-	"log"
 	"mime/multipart"
 	"net/http"
 	"os"
@@ -16,33 +16,38 @@ import (
 	"sync"
 	"time"
 
-	uuid "github.com/satori/go.uuid"
-
+	"github.com/ishworgurung/vanishling/config"
+	"github.com/ishworgurung/vanishling/ttl"
 	"github.com/minio/highwayhash"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	uuid "github.com/satori/go.uuid"
 )
 
 type fileUploader struct {
 	wg sync.WaitGroup // locker
 	p  string         // file storage path
 	// file ttl cleaner log path; one that holds every file name that have ingress'ed
-	// so they can be deleted even if the service crashed.
-	lp                string
-	fileUploadContext // file's upload context
+	// so they can be deleted even if the core has crashed.
+	lp string
+	// file's upload context
+	Uploader
 }
 
-type fileUploadContext struct {
-	remoteAddr string       // file uploader IP address
+type Uploader struct {
+	remoteAddr string       // file core IP address
 	fn         string       // file uploaded name
 	u          uuid.UUID    // file name: unique uuid v5
 	h          hash.Hash    // file unique hash
 	l          sync.RWMutex // file lock
 	// file's ttl cleaner context. one file has one cleaner
-	ttlCleanerContext TTLDeleteContext
+	deleter ttl.Deleter
 	// file's ttl cleaner context. one file has one cleaner
-	logTtlCleanerContext *LogBasedTTLDeleteContext
+	cleaner *ttl.Cleaner
 }
 
-func newFileUploaderSvc() (*fileUploader, error) {
+func NewVanishling(ctx context.Context, logPath string,
+	storagePath string, lg zerolog.Logger) (*fileUploader, error) {
 	//FIXME: key
 	seed, err := hex.DecodeString(
 		"000102030405060708090A0B0C0D0E0FF0E0D0C0B0A090807060504030201000")
@@ -54,18 +59,19 @@ func newFileUploaderSvc() (*fileUploader, error) {
 		return nil, err
 	}
 
-	logBasedTTLCleaner := NewLogBasedTTLDeleterService()
-	go logBasedTTLCleaner.StartLogCleanerTimerLoop(defaultLogPath) // read path
+	cleaner := ttl.NewCleaner()
+	go cleaner.Start(ctx, logPath) // read path
+	deleter := ttl.NewDeleter(ctx, lg)
 
 	return &fileUploader{
 		wg: sync.WaitGroup{},
-		p:  defaultStoragePath,
-		lp: defaultLogPath,
-		fileUploadContext: fileUploadContext{
-			l:                    sync.RWMutex{},
-			h:                    hh,
-			ttlCleanerContext:    NewTTLDeleterService(),
-			logTtlCleanerContext: logBasedTTLCleaner,
+		p:  storagePath,
+		lp: logPath,
+		Uploader: Uploader{
+			l:       sync.RWMutex{},
+			h:       hh,
+			deleter: deleter,
+			cleaner: cleaner,
 		},
 	}, nil
 }
@@ -102,14 +108,14 @@ func (f *fileUploader) download(w http.ResponseWriter, r *http.Request) {
 		f.remoteAddr = r.RemoteAddr
 	}
 
-	fileHash := r.Header.Get(defaultFileIdHeader)
+	fileHash := r.Header.Get(config.DefaultFileIdHeader)
 	if len(fileHash) == 0 {
-		log.Printf(f.remoteAddr+": error retrieving the file '%s'", fileHash)
+		log.Info().Msgf(f.remoteAddr+": error retrieving the file '%s'", fileHash)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	if strings.Contains(fileHash, "..") || strings.Contains(fileHash, "/") {
-		log.Printf(f.remoteAddr+": error retrieving the file '%s'", fileHash)
+		log.Info().Msgf(f.remoteAddr+": error retrieving the file '%s'", fileHash)
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
@@ -119,11 +125,11 @@ func (f *fileUploader) download(w http.ResponseWriter, r *http.Request) {
 	// seek to the start of the uploaded file
 	fileBytes, err := ioutil.ReadFile(p)
 	if err != nil {
-		log.Printf(f.remoteAddr+": error while reading the file: %s\n", err)
+		log.Info().Msgf(f.remoteAddr+": error while reading the file: %s\n", err)
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	log.Printf(f.remoteAddr + ": ok")
+	log.Info().Msgf(f.remoteAddr + ": ok")
 	w.WriteHeader(http.StatusOK)
 	w.Write(fileBytes)
 	return
@@ -138,58 +144,62 @@ func (f *fileUploader) upload(w http.ResponseWriter, r *http.Request) {
 		f.remoteAddr = r.RemoteAddr
 	}
 
-	if err := r.ParseMultipartForm(defaultMaxUploadByte); err != nil {
-		log.Println(f.remoteAddr + ":" + err.Error())
+	if err := r.ParseMultipartForm(config.DefaultMaxUploadByte); err != nil {
+		log.Info().Msg(f.remoteAddr + ":" + err.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	uploadedFile, handler, err := r.FormFile("file")
 	if err != nil {
-		log.Println(f.remoteAddr + ":" + "error retrieving the File: %s" + err.Error())
+		log.Info().Msg(f.remoteAddr + ":" + "error retrieving the File: %s" + err.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	defer func() {
 		if err = uploadedFile.Close(); err != nil {
-			log.Println(f.remoteAddr + ":" + err.Error())
+			log.Info().Msg(f.remoteAddr + ":" + err.Error())
 		}
 	}()
 
 	if err = f.setFileName(handler.Filename, handler.Size); err != nil {
-		log.Println(f.remoteAddr + ":" + err.Error())
+		log.Info().Msg(f.remoteAddr + ":" + err.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	err, fileNameAsHashId := f.hashFile(uploadedFile)
 	if err != nil {
-		log.Println(f.remoteAddr + ":" + err.Error())
+		log.Info().Msg(f.remoteAddr + ":" + err.Error())
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
-	log.Println(f.remoteAddr + ": ok")
-	w.Header().Add(defaultFileIdHeader, *fileNameAsHashId)
+	log.Info().Msg(f.remoteAddr + ": ok")
+	w.Header().Add(config.DefaultFileIdHeader, *fileNameAsHashId)
 	w.WriteHeader(http.StatusOK)
 
-	uploadedFileTTL := r.Header.Get(defaultTTLHeader)
+	uploadedFileTTL := r.Header.Get(config.DefaultTTLHeader)
 	if len(uploadedFileTTL) != 0 {
-		f.ttlCleanerContext.Ttl, err = time.ParseDuration(uploadedFileTTL)
+		t, err := time.ParseDuration(uploadedFileTTL)
 		if err != nil {
-			log.Printf(f.remoteAddr+":"+"invalid duration: %s", err)
-			f.ttlCleanerContext.Ttl = defaultFileTTL
+			t = config.DefaultFileTTL
 		}
-		log.Printf(f.remoteAddr+": uploader: setting duration of %s for file deletion (ttl) for file: '%s' and hashed file id: %s",
-			f.ttlCleanerContext.Ttl, f.fn, *fileNameAsHashId)
+		f.deleter.SetFileTTL(t)
+		log.Info().Err(err).Msgf(
+			"setting TTL value of '%s' for file: '%s' and hashed file id: %s",
+			f.deleter.GetFileTTL(), f.getFileName(), *fileNameAsHashId)
+
 	} else {
-		log.Printf(f.remoteAddr+":"+
-			"uploader: setting default duration of %s for file deletion (ttl) for file: '%s' and hashed file id: %s",
-			defaultFileTTL, f.fn, *fileNameAsHashId)
-		f.ttlCleanerContext.Ttl = defaultFileTTL
+		log.Info().Msgf(f.remoteAddr+":"+
+			"setting default TTL of '%s' for file: '%s' and hashed file id: %s",
+			config.DefaultFileTTL, f.getFileName(), *fileNameAsHashId)
+		f.deleter.SetFileTTL(config.DefaultFileTTL)
 	}
 
-	// set ttl for deletion in the log entry in case, service goes down.
-	if err := f.ttlCleanerContext.WriteLogEntry(f.ttlCleanerContext.Ttl, defaultStoragePath, *fileNameAsHashId); err != nil {
-		log.Printf(f.remoteAddr+": could not write log entry for file '%s': %s\n", *fileNameAsHashId, err)
+	// set ttl for deletion in the log entry in case, core goes down.
+	if err := f.deleter.WriteLogEntry(f.deleter.GetFileTTL(), config.DefaultStoragePath, *fileNameAsHashId); err != nil {
+		log.Info().Err(err).Msgf(
+			"could not write log entry for file '%s' with hashed file id '%s'",
+			f.getFileName(), *fileNameAsHashId)
 	}
 }
 
@@ -204,8 +214,12 @@ func (f *fileUploader) setFileName(fn string, fs int64) error {
 	if fs == 0 {
 		return errors.New(f.remoteAddr + ": zero byte file uploaded")
 	}
-	f.fileUploadContext.fn = fn
+	f.Uploader.fn = fn
 	return nil
+}
+
+func (f *fileUploader) getFileName() string {
+	return f.Uploader.fn
 }
 
 func (f *fileUploader) ensureDirWritable() error {

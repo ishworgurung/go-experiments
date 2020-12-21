@@ -1,16 +1,20 @@
 package main
 
 import (
-	"fmt"
-	"log"
+	"context"
 	"net/http"
-	"os"
+
+	"github.com/ishworgurung/vanishling/config"
+
+	"github.com/alecthomas/kong"
+	"github.com/ishworgurung/vanishling/core"
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
-type Vanishable interface {
-	download(w http.ResponseWriter, r *http.Request)
-	upload(w http.ResponseWriter, r *http.Request)
-	delete(w http.ResponseWriter, r *http.Request)
+var cli struct {
+	ListenAddr string `help:"Listen address for server." default:"127.0.0.1:8080"`
+	Debug      bool   `help:"Debug flag." default:false`
 }
 
 func main() {
@@ -25,23 +29,36 @@ func main() {
 	// o if the auth key correct, fetch the file
 	// o if the auth key incorrect, throw 4xxs
 
-	fileUploaderService, err := newFileUploaderSvc()
-	if err != nil {
-		log.Fatal(err)
+	cliCtx := kong.Parse(&cli, kong.Name("vanishling"), kong.Description("Vanishling TTL core"))
+
+	zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	if cli.Debug {
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
 	}
-	healthCheckService, err := newHealthCheckSvc()
+	lg := log.Logger
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	v, err := core.NewVanishling(ctx, config.DefaultLogPath, config.DefaultStoragePath, lg)
 	if err != nil {
-		log.Fatal(err)
+		log.Fatal().Err(err)
+	}
+	hc, err := core.NewHealthCheck(ctx, lg)
+	if err != nil {
+		log.Fatal().Err(err)
 	}
 	mux := http.NewServeMux()
-	mux.Handle("/ping", healthCheckService)
-	mux.Handle("/", fileUploaderService)
+	mux.Handle("/ping", hc)
+	mux.Handle("/health", hc)
+	mux.Handle("/", v)
 
-	listenPort := os.Getenv("PORT")
-	if len(listenPort) == 0 {
-		listenPort = "8080"
+	cliCtx.FatalIfErrorf(err)
+
+	log.Info().Msgf("Vanishling TTL core is up and running at addr `%v`", cli.ListenAddr)
+
+	if err := http.ListenAndServe(cli.ListenAddr, mux); err != nil {
+		log.Fatal().Err(err)
 	}
-	log.Printf("listening on :%s\n", listenPort)
-	log.Fatal(http.ListenAndServe(fmt.Sprintf(":%s", listenPort), mux))
-
+	log.Info().Msg("Goodbye!")
 }
