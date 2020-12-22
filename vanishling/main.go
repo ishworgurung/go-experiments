@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/ishworgurung/vanishling/config"
+	"github.com/ishworgurung/vanishling/health_check"
+
+	"github.com/ishworgurung/vanishling/cfg"
 
 	"github.com/alecthomas/kong"
 	"github.com/ishworgurung/vanishling/core"
@@ -20,7 +22,7 @@ var cli struct {
 func main() {
 
 	// add route / POST
-	// o if no ttl provided use default from config or else use the provided ttl
+	// o if no ttl provided use default from cfg or else use the provided ttl
 	// o upload the file and store it in filesystem
 	// o after the ttl expire, delete the file from fs
 	// o return auth key
@@ -40,23 +42,23 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	v, err := core.NewVanishling(ctx, config.DefaultLogPath, config.DefaultStoragePath, lg)
+	vanishling, err := core.New(ctx, cfg.DefaultLogPath, cfg.DefaultStoragePath, lg, cfg.DefaultHHSeed)
 	if err != nil {
 		log.Fatal().Err(err)
 	}
-	hc, err := core.NewHealthCheck(ctx, lg)
+
+	hc, err := health_check.New(ctx, lg)
 	if err != nil {
 		log.Fatal().Err(err)
 	}
+
 	mux := http.NewServeMux()
 	mux.Handle("/ping", hc)
 	mux.Handle("/health", hc)
-	mux.Handle("/", v)
+	mux.Handle("/", vanishling)
 
 	cliCtx.FatalIfErrorf(err)
-
 	log.Info().Msgf("Vanishling TTL core is up and running at addr `%v`", cli.ListenAddr)
-
 	if err := http.ListenAndServe(cli.ListenAddr, mux); err != nil {
 		log.Fatal().Err(err)
 	}

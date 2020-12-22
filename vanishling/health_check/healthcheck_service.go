@@ -1,4 +1,4 @@
-package core
+package health_check
 
 import (
 	"context"
@@ -17,7 +17,7 @@ func (h healthCheck) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func NewHealthCheck(ctx context.Context, zlog zerolog.Logger) (*healthCheck, error) {
+func New(ctx context.Context, zlog zerolog.Logger) (*healthCheck, error) {
 	return &healthCheck{
 		zlog: zlog,
 		ctx:  ctx,
