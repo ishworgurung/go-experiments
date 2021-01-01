@@ -14,6 +14,8 @@ import (
 	"github.com/rs/zerolog/log"
 )
 
+// usage: ./hciscan -adapter_id hci0
+
 func main() {
 	adapterID := flag.String("adapter_id", "hci0", "-adapter_id hci0")
 	flag.Parse()
@@ -83,7 +85,6 @@ func (hci *hciScan) Scan() error {
 			}
 		}
 	}
-
 }
 
 func sortHCIAddresses(hci *hciScan) []string {
