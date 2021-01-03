@@ -10,7 +10,7 @@ import (
 
 func main() {
 	fqdnAddr := flag.String("fqdn", "", "-fqdn example.net")
-	resolverAddr := flag.String("resolver", "", "-resolver doh.powerdns.org")
+	resolverAddr := flag.String("resolver", "doh.powerdns.org", "-resolver doh.powerdns.org")
 	flag.Parse()
 	if len(*fqdnAddr) == 0 || len(*resolverAddr) == 0 {
 		flag.Usage()
