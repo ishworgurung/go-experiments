@@ -1,6 +1,6 @@
 module github.com/ishworgurung/go-experiments/hciscan
 
-go 1.15
+go 1.16
 
 require (
 	github.com/muka/go-bluetooth v0.0.0-20201211051136-07f31c601d33

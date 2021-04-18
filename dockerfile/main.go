@@ -2,28 +2,30 @@ package main
 
 // Generate Dockerfile from a Docker image
 import (
-	"flag"
 	"fmt"
 	"os"
+
+	"gopkg.in/alecthomas/kingpin.v2"
 )
 
 func main() {
-	imageIdOpt := flag.String("i", "", "-i [imageid|layerid]")
-	imageNameOpt := flag.String("n", "", "-n [foobar:latest|foobar:1.1.2]")
-	imageRepo := flag.String("r", "docker.io/library", "-r [02345511234.dkr.ap-southeast-2.aws.com/foobar|asia.gcr.io/google-containers]")
-	loglevel := flag.String("l", "info", "-l [info|debug|warn|fatal|error]")
-	flag.Parse()
 
-	var (
-		err error
-	)
-	// Either image id or image name tag must be provided.
-	// The Image repo is optional and defaults to `docker.io/library/`
+	imageIdOpt := kingpin.Flag("imageid", "Docker Image Id / Layer Id").String()
+	imageNameOpt := kingpin.Flag("imagename", "Docker Image Name").String()
+	imageRepo := kingpin.Flag("imagerepo", "Docker Image Repository e.g. [02345511234.dkr.ap-southeast-2.aws.com/foobar|asia.gcr.io/google-containers]").String()
+	loglevel := kingpin.Flag("loglevel", "Application Log Level").String()
+
+	kingpin.Parse()
+
+	// Either image id or image name tag must be provided. The Image repo is optional and defaults to `docker.io/library/`
 	if len(*imageNameOpt) == 0 && len(*imageIdOpt) == 0 {
 		println("either image name or image id should be provided")
-		flag.Usage()
+		kingpin.Usage()
 		os.Exit(127)
 	}
+
+	var err error
+	c := imageClient.New(*imageRepo, *loglevel)
 
 	dir := newDockerImageClient(*imageRepo, *loglevel)
 	if len(*imageNameOpt) > 0 {

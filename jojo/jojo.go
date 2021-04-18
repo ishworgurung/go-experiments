@@ -121,8 +121,8 @@ var (
 )
 
 func parseUpstreamServers(str string) (*UpstreamServers, error) {
-	servers := []UpstreamServer{}
-	live := []string{}
+	var servers []UpstreamServer
+	var live []string
 	for _, addr := range strings.Split(str, ",") {
 		server := UpstreamServer{addr: addr}
 		servers = append(servers, server)

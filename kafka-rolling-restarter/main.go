@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"time"
 
 	"github.com/prometheus/client_golang/api"
@@ -18,15 +19,27 @@ import (
 )
 
 const (
+	// Number of active controllers sum total - one of the value of metric to trigger kafka service restart
+	controllersSum = 1.0
+	// Other key metrics sum total - one of the value of metric to trigger kafka service restart
+	keyMetricsSum = 0.0
+)
+
+var (
 	// URP metric defined as: sum of the rate of URP over one minute
-	underReplicatedPartitionQuery    = "sum(rate(prometheus_http_requests_total{code=\"200\",handler=\"/rules\"}[1m]))> 0"
+	underReplicatedPartitionQuery = "sum(rate(prometheus_http_requests_total{code=\"200\",handler=\"/rules\"}[1m]))> 0"
 	// ISR metric defined as: sum of the rate of ISR change over one minute
-	inSyncReplicatedQuery            = "sum(rate(prometheus_http_requests_total{code=\"200\",handler=\"/rules\"}[1m]))> 0"
+	inSyncReplicatedQuery = "sum(rate(prometheus_http_requests_total{code=\"200\",handler=\"/rules\"}[1m]))> 0"
+	// broker traffic query as: sum of the rate of byte in + sum of the rate of byte out over 30 minutes
+	//brokerTrafficQuery               = "sum(rate(prometheus_http_requests_total{code=\"200\",handler=\"/rules\"}[1m]))> 0"
+	// sum of active controller count *should* be 1.0 in any stable kafka cluster.
+	sumActiveControllerCountQuery = "sum(rate(prometheus_http_requests_total{code=\"200\",handler=\"/rules\"}[1m]))> 0"
+	// poll interval from Prometheus
 	prometheusQueryRangePollInterval = 5 * time.Second
-	// How far to go to calculate the aggregated value of URP and ISR.
-	prometheusQueryRangeStartAt      = -time.Minute * 2
-	// For zero downtime rolling restarts, we need to wait so metrics are available in Prometheus
-	preStartSleepDuration            = time.Second * 240
+	// How far to go to calculate the aggregated value of metrics
+	prometheusQueryRangeStartAt = -time.Minute * 2
+	// For zero downtime rolling restarts, we need to wait (metric aggregation interval) so they are available to fetch from Prometheus
+	preStartSleepDuration = time.Second * 5 // 240
 )
 
 func main() {
@@ -35,12 +48,12 @@ func main() {
 	flag.Parse()
 
 	// Give ample time for metrics to be available in Prometheus.
-	fmt.Printf("Giving ample time for metrics to be available in Prometheus. Waiting %s\n", preStartSleepDuration)
+	fmt.Printf("Give ample time for metrics to be available in Prometheus. Waiting %s\n", preStartSleepDuration)
 	time.Sleep(preStartSleepDuration)
 
 	queryClient := newPromQueryClient(*prometheusUrl)
-	var sum float64
 	for {
+		var activeControllerSum, keyMetricsSum float64
 		println()
 		urp, err := queryClient.promQueryRange(context.Background(), underReplicatedPartitionQuery)
 		if err != nil {
@@ -52,34 +65,41 @@ func main() {
 			fmt.Printf("error querying Prometheus: %v\n", err)
 			os.Exit(1)
 		}
-		sum += queryClient.getAggregatedMetricValue(urp, isr)
-		if sum == 0.0 {
+		acc, err := queryClient.promQueryRange(context.Background(), sumActiveControllerCountQuery)
+		if err != nil {
+			fmt.Printf("error querying Prometheus: %v\n", err)
+			os.Exit(1)
+		}
+		activeControllerSum += queryClient.getActiveControllerSum(acc)
+		keyMetricsSum += queryClient.getKeyMetricsSum(urp, isr)
+		if isRestartRequired(activeControllerSum, keyMetricsSum) == true {
 			fmt.Println("===============================")
 			if *restartKafkaService == true {
 				// local restart
 				err := restart("kafka-server.service")
 				if err != nil {
 					log.Printf("restart of kafka service failed: %s", err)
+					os.Exit(1)
 				}
 				break // we are done restarting this node's kafka service.
 			}
-			fmt.Println("mock sleep for 360s")
-			//time.Sleep(6 * time.Minute)
+			fmt.Println("sleeping a minute")
+			time.Sleep(1 * time.Minute)
+			fmt.Println("we are done")
 			fmt.Println("===============================")
 		} else {
 			fmt.Printf("Kafka service is still replicating data so not restarting.. waiting for %s ..\n", prometheusQueryRangePollInterval)
 		}
-		fmt.Printf("sum = %.2f\n", sum)
+		fmt.Printf("key metrics sum = %.2f\n", keyMetricsSum)
+		fmt.Printf("active controller metric sum = %.2f\n", activeControllerSum)
 		time.Sleep(prometheusQueryRangePollInterval)
 
 		// update time range
-		queryClient.updateTimeRange(
+		queryClient.setTimeRange(
 			time.Now().Add(prometheusQueryRangeStartAt),
 			time.Now(),
 			time.Minute,
 		)
-		// reset
-		sum = 0.0
 		println()
 	}
 }
@@ -94,12 +114,12 @@ func newPromQueryClient(prometheusUrl string) *promQueryClient {
 		Address: prometheusUrl,
 	})
 	if err != nil {
-		fmt.Printf("Error creating client: %v\n", err)
+		fmt.Printf("error creating client: %v\n", err)
 		os.Exit(1)
 	}
-	v1api := v1.NewAPI(client)
+
 	return &promQueryClient{
-		apiClient: v1api,
+		apiClient: v1.NewAPI(client),
 		timeRange: v1.Range{
 			Start: time.Now().Add(prometheusQueryRangeStartAt),
 			End:   time.Now(),
@@ -108,7 +128,9 @@ func newPromQueryClient(prometheusUrl string) *promQueryClient {
 	}
 }
 
-func (p *promQueryClient) updateTimeRange(s, e time.Time, step time.Duration) {
+// setTimeRange sets the time range as we need sliding window interval for Prometheus to fetch
+// the metrics for.
+func (p *promQueryClient) setTimeRange(s, e time.Time, step time.Duration) {
 	p.timeRange = v1.Range{
 		Start: s,
 		End:   e,
@@ -132,7 +154,10 @@ func (p *promQueryClient) promQueryRange(ctx context.Context, q string) (model.M
 	return m, nil
 }
 
-func (p *promQueryClient) getAggregatedMetricValue(urp model.Matrix, isr model.Matrix) float64 {
+func (p *promQueryClient) getKeyMetricsSum(
+	urp model.Matrix,
+	isr model.Matrix,
+) float64 {
 	var sum float64
 	for _, x := range urp {
 		for _, v := range x.Values {
@@ -150,8 +175,26 @@ func (p *promQueryClient) getAggregatedMetricValue(urp model.Matrix, isr model.M
 	return sum
 }
 
+func (p *promQueryClient) getActiveControllerSum(acc model.Matrix) float64 {
+	var sum float64
+	for _, x := range acc {
+		for _, v := range x.Values {
+			fmt.Printf("%d,%.2f\n", v.Timestamp.UnixNano(), v.Value)
+			sum += float64(v.Value)
+		}
+	}
+	return sum
+}
+
+func isRestartRequired(a, k float64) bool {
+	return k == keyMetricsSum && a == controllersSum
+}
+
 //  restart via systemd
 func restart(serviceName string) error {
-	fmt.Printf("systemctl restart %s\n", serviceName)
-	return nil
+	arg := "restart " + serviceName
+	cmd := exec.Command("systemctl", arg)
+	return cmd.Run()
+	//fmt.Println("faking restart")
+	//return nil
 }
